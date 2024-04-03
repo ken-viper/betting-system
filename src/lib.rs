@@ -213,12 +213,22 @@ impl MatchList { // Implementation of MatchList
         require!(current_match.match_state == MatchState::InProgress, "That game is already complete or in the future"); // Checks that the game has not already been ended
         require!(winning_team == current_match.team_1 || winning_team == current_match.team_2, "That is not a valid team"); // Checks valid winner input 
 
-        for i in 0..current_match.bets.len() { // Loops through all bets
-            if current_match.bets[i].payed_out == PayedOut::YetToBePayed { // Checks not already payed out and they bet on the winner
-                if current_match.bets[i].decision == winning_team { // Checks they bet on the winner
-                    
-                    let winner: AccountId = current_match.bets[i].bettor.clone(); // Gets the account Id of each winner
-                    let winnings: f64 = current_match.bets[i].potential_winnings * ONE_USDC; // Gets the amount they win
+        current_match.winner = Some(winning_team); // Sets the winning team
+        current_match.match_state = MatchState::Complete;
+        self.complete_matches.insert(&match_id, &current_match); // Inserts the match into the complete_matches
+        self.in_progress_matches.remove(&match_id); // Removes the match from in_progress_matches
+        log!("The match is now complete")
+    }
+
+    #[payable]
+    pub fn claim_winnings(&mut self, match_id: String) {
+        assert_one_yocto();
+        let mut selected_match = self.complete_matches.get(&match_id).unwrap_or_else(|| panic!("No match exists with match)id: {}", match_id)); // Finds the desired match, panics if doesn't find the match
+        for i in 0..selected_match.bets.len() { //as we used Vec for bets, for loop is the best case.
+            if selected_match.bets[i].bettor == env::predecessor_account_id() {
+                if selected_match.winner.clone().unwrap() == selected_match.bets[i].decision && selected_match.bets[i].payed_out == PayedOut::YetToBePayed {
+                    let winner: AccountId = selected_match.bets[i].bettor.clone(); // Gets the account Id of each winner
+                    let winnings: f64 = selected_match.bets[i].potential_winnings * ONE_USDC; // Gets the amount they win
                     let args: Vec<u8> = json!({
                         "receiver_id": winner,
                         "amount": winnings.to_string(),
@@ -226,18 +236,12 @@ impl MatchList { // Implementation of MatchList
                     }).to_string().into_bytes();
                     Promise::new(USDC_CONTRACT.parse().unwrap()).function_call("ft_transfer".to_string(), args, ONE_YOCTO, near_sdk::Gas(100000000000000));
                     //Change to ft_transfer_call
-
-                    current_match.bets[i].payed_out = PayedOut::Payed;
+                    selected_match.bets[i].payed_out = PayedOut::Payed;
                 }
-                
             }
-        } 
-
-        current_match.winner = Some(winning_team); // Sets the winning team
-        current_match.match_state = MatchState::Complete;
-        self.complete_matches.insert(&match_id, &current_match); // Inserts the match into the complete_matches
-        self.in_progress_matches.remove(&match_id); // Removes the match from in_progress_matches
-        log!("The match is now complete")
+        }
+        self.complete_matches.insert(&match_id, &selected_match);
+        log!("User claimed winnings")
     }
 
 
@@ -367,3 +371,7 @@ fn find_winnings(betted_team_bets: f64, other_team: f64, bet_amount: f64) -> f64
     (1.0 / 1.05) * (bet_amount + other_team * ln_target.ln())
 }
 
+/// Assert that 1 yoctoNEAR was attached.
+pub fn assert_one_yocto() {
+    require!(env::attached_deposit() == 1, "Requires attached deposit of exactly 1 yoctoNEAR")
+}
