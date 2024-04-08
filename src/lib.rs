@@ -227,10 +227,9 @@ impl MatchList { // Implementation of MatchList
         for i in 0..selected_match.bets.len() { //as we used Vec for bets, for loop is the best case.
             if selected_match.bets[i].bettor == env::predecessor_account_id() {
                 if selected_match.winner.clone().unwrap() == selected_match.bets[i].decision && selected_match.bets[i].payed_out == PayedOut::YetToBePayed {
-                    let winner: AccountId = selected_match.bets[i].bettor.clone(); // Gets the account Id of each winner
                     let winnings: f64 = selected_match.bets[i].potential_winnings * ONE_USDC; // Gets the amount they win
                     let args: Vec<u8> = json!({
-                        "receiver_id": winner,
+                        "receiver_id": env::predecessor_account_id(),
                         "amount": winnings.to_string(),
                         "memo": "Winnings",
                     }).to_string().into_bytes();
@@ -287,11 +286,10 @@ impl MatchList { // Implementation of MatchList
         for i in 0..current_match.bets.len() { // Loops through all bets
             if current_match.bets[i].bettor.clone() == env::predecessor_account_id() && current_match.bets[i].payed_out == PayedOut::YetToBePayed { // Checks not already payed out and they bet on the winner
                 // Payout this person (convert to balance)
-                let account: AccountId = current_match.bets[i].bettor.clone();
                 let returns: f64 = current_match.bets[i].bet_amount * ONE_USDC;
 
                 let args: Vec<u8> = json!({
-                    "receiver_id": account,
+                    "receiver_id": env::predecessor_account_id(),
                     "amount": returns.to_string(),
                     "memo": "Return funds",
                 }).to_string().into_bytes();
