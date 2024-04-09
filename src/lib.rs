@@ -213,26 +213,6 @@ impl MatchList { // Implementation of MatchList
         require!(current_match.match_state == MatchState::InProgress, "That game is already complete or in the future"); // Checks that the game has not already been ended
         require!(winning_team == current_match.team_1 || winning_team == current_match.team_2, "That is not a valid team"); // Checks valid winner input 
 
-        for i in 0..current_match.bets.len() { // Loops through all bets
-            if current_match.bets[i].payed_out == PayedOut::YetToBePayed { // Checks not already payed out and they bet on the winner
-                if current_match.bets[i].decision == winning_team { // Checks they bet on the winner
-                    
-                    let winner: AccountId = current_match.bets[i].bettor.clone(); // Gets the account Id of each winner
-                    let winnings: f64 = current_match.bets[i].potential_winnings * ONE_USDC; // Gets the amount they win
-                    let args: Vec<u8> = json!({
-                        "receiver_id": winner,
-                        "amount": winnings.to_string(),
-                        "memo": "Winnings",
-                    }).to_string().into_bytes();
-                    Promise::new(USDC_CONTRACT.parse().unwrap()).function_call("ft_transfer".to_string(), args, ONE_YOCTO, near_sdk::Gas(100000000000000));
-                    //Change to ft_transfer_call
-
-                    current_match.bets[i].payed_out = PayedOut::Payed;
-                }
-                
-            }
-        } 
-
         current_match.winner = Some(winning_team); // Sets the winning team
         current_match.match_state = MatchState::Complete;
         self.complete_matches.insert(&match_id, &current_match); // Inserts the match into the complete_matches
@@ -240,12 +220,34 @@ impl MatchList { // Implementation of MatchList
         log!("The match is now complete")
     }
 
+    #[payable]
+    pub fn claim_winnings(&mut self, match_id: String) {
+        assert_one_yocto();
+        let mut selected_match = self.complete_matches.get(&match_id).unwrap_or_else(|| panic!("No match exists with match)id: {}", match_id)); // Finds the desired match, panics if doesn't find the match
+        for i in 0..selected_match.bets.len() { //as we used Vec for bets, for loop is the best case.
+            if selected_match.bets[i].bettor == env::predecessor_account_id() {
+                if selected_match.winner.clone().unwrap() == selected_match.bets[i].decision && selected_match.bets[i].payed_out == PayedOut::YetToBePayed {
+                    let winnings: f64 = selected_match.bets[i].potential_winnings * ONE_USDC; // Gets the amount they win
+                    let args: Vec<u8> = json!({
+                        "receiver_id": env::predecessor_account_id(),
+                        "amount": winnings.to_string(),
+                        "memo": "Winnings",
+                    }).to_string().into_bytes();
+                    Promise::new(USDC_CONTRACT.parse().unwrap()).function_call("ft_transfer".to_string(), args, ONE_YOCTO, near_sdk::Gas(100000000000000));
+                    //Change to ft_transfer_call
+                    selected_match.bets[i].payed_out = PayedOut::Payed;
+                }
+            }
+        }
+        self.complete_matches.insert(&match_id, &selected_match);
+        log!("User claimed winnings")
+    }
 
-    // Private call functio nthat allows the contract account to return funds to the bettors if a match was cancelled
+    // Private call which cancels the match
+
     #[private]
-    pub fn return_funds(&mut self, match_id: String, state: MatchState) {
+    pub fn cancel_match(&mut self, match_id: String, state: MatchState) {
         let mut current_match: Option<Match> = None;
-
         match state {
             MatchState::Future => {
                 current_match = Some(self.future_matches.get(&match_id).unwrap_or_else(|| panic!("No match exists with match)id: {}", match_id))); // Finds the desired match, panics if doesn't find the match
@@ -257,30 +259,8 @@ impl MatchList { // Implementation of MatchList
         }
 
         match current_match { Some(mut x) => { // If there is a match
-            for i in 0..x.bets.len() { // Loops through all bets
-                if x.bets[i].payed_out == PayedOut::YetToBePayed { // Checks not already payed out and they bet on the winner
-                    // Payout this person (convert to balance)
-                    let account: AccountId = x.bets[i].bettor.clone();
-                    let returns: f64 = x.bets[i].bet_amount * ONE_USDC;
-
-                    let args: Vec<u8> = json!({
-                        "receiver_id": account,
-                        "amount": returns.to_string(),
-                        "memo": "Return funds",
-                    }).to_string().into_bytes();
-                    Promise::new(USDC_CONTRACT.parse().unwrap()).function_call("ft_transfer".to_string(), args, ONE_YOCTO, near_sdk::Gas(30000000000000));
-
-                    //Extra checks
-                    //Update bet payed out for each individual sequencially not at end as one might be payed out but not others
-                    x.bets[i].payed_out = PayedOut::ReturnPay;       
-                }
-            } 
-
-            log!("Return pay has been issued");
-        
             x.match_state = MatchState::Error;
             self.error_matches.insert(&match_id, &x); // Inserts the match into the complete_matches
-
             match state {
                 MatchState::Future => {
                     self.bet_counter -= x.promised_winnings.abs(); // Removes the promised winnings from the bet_counter
@@ -291,10 +271,36 @@ impl MatchList { // Implementation of MatchList
                 }
                 _ => panic!("That is not a valid state")
             }
-
         } None => { 
             panic!("Error")
-        } } 
+        }}
+        log!("Match is canceled") 
+    }
+
+    // Payable call function to retrieve funds from canceled match.
+    #[payable]
+    pub fn retrieve_funds(&mut self, match_id: String) {
+        assert_one_yocto();
+        let mut current_match = self.error_matches.get(&match_id).unwrap_or_else(|| panic!("No match exists with match)id: {}", match_id));
+
+        for i in 0..current_match.bets.len() { // Loops through all bets
+            if current_match.bets[i].bettor.clone() == env::predecessor_account_id() && current_match.bets[i].payed_out == PayedOut::YetToBePayed { // Checks not already payed out and they bet on the winner
+                // Payout this person (convert to balance)
+                let returns: f64 = current_match.bets[i].bet_amount * ONE_USDC;
+
+                let args: Vec<u8> = json!({
+                    "receiver_id": env::predecessor_account_id(),
+                    "amount": returns.to_string(),
+                    "memo": "Return funds",
+                }).to_string().into_bytes();
+                Promise::new(USDC_CONTRACT.parse().unwrap()).function_call("ft_transfer".to_string(), args, ONE_YOCTO, near_sdk::Gas(30000000000000));
+
+                //Extra checks
+                //Update bet payed out for each individual sequencially not at end as one might be payed out but not others
+                current_match.bets[i].payed_out = PayedOut::ReturnPay;       
+            }
+        }
+        self.error_matches.insert(&match_id, &current_match);
     }
 
 
@@ -367,3 +373,7 @@ fn find_winnings(betted_team_bets: f64, other_team: f64, bet_amount: f64) -> f64
     (1.0 / 1.05) * (bet_amount + other_team * ln_target.ln())
 }
 
+/// Assert that 1 yoctoNEAR was attached.
+pub fn assert_one_yocto() {
+    require!(env::attached_deposit() == 1, "Requires attached deposit of exactly 1 yoctoNEAR")
+}
